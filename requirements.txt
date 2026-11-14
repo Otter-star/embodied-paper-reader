@@ -1,0 +1,4 @@
+beautifulsoup4>=4.12
+filelock>=3.13
+PyMuPDF>=1.24
+requests>=2.31
