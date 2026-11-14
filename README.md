@@ -2,7 +2,7 @@
 
 一个面向具身智能研究的论文阅读工作流。目标是让读者能讲清论文贡献、回到原文核查实验结论、了解复现条件，并在用户提出时判断自己的设备适合做哪一步。
 
-仓库包含[验收表](docs/acceptance.md)和[本地同步脚本](scripts/zotero_sync.py)。首个样品是 OpenVLA。自然语言选文和项目 Skill 见下方开发顺序。
+项目 Skill 位于 [.agents/skills/embodied-paper-reader/](.agents/skills/embodied-paper-reader/SKILL.md)，配套[验收表](docs/acceptance.md)与本机 Zotero 脚本。OpenVLA 已用于验证正式版与 arXiv v3 的入库及重试。
 
 ## 两种请求
 
@@ -12,6 +12,8 @@
 ## 单篇交付
 
 先用一段话交代背景、研究问题、方法和效果。再解释模型的输入与输出、关键设计、支撑结论的实验和适用边界。在导读及 Zotero 笔记中，关键数字就近标出原文章节、图表或官方代码位置。末尾默认推荐 3 篇相关论文，每篇说明技术关系和一个值得带着读的问题。引用上下文与关联论文的官方摘要能支持这层关系时即可推荐。
+
+中文导读用简短加粗突出研究问题、核心方法、主要结果、局限和复现门槛，方便快速扫读，每段优先突出 1–2 处。结果数字附近保留比较对象、任务范围和单位。对话使用 Markdown 加粗，Zotero 的 HTML 笔记使用 `<strong>`，让重点在两处都可见。
 
 复现条件分推理、微调、仿真、真机四项。普通精读只整理官方条件。若你问“我的设备能跑吗”，优先用你在本轮给出的参数，其次用已有的 `local/device.md`。仅在目标确为当前电脑时，才对缺失参数做只读探测。缺少设备信息时，单列待验证的个人判断。
 
@@ -32,26 +34,24 @@ python -m pip install -r requirements.txt
 python -X utf8 scripts/zotero_sync.py local/openvla/paper.json
 ```
 
-输入是一份已经选版、核对过的论文清单，与 PDF 和 HTML 中文导读放在同一目录。当前电脑的 v3 样品为 `local/openvla/paper.json`，正式版为 `local/openvla/publisher.json`。新检出的项目需自行准备材料。清单示意如下，`authors` 按原文填全，字符串使用“名 姓”的顺序。
+输入是一份已核对版本的论文清单，与 PDF 和 HTML 中文导读放在同一目录，字段见 [Skill 同步输入约定](.agents/skills/embodied-paper-reader/references/sync-input.md)。当前电脑的 v3 样品为 `local/openvla/paper.json`，正式版为 `local/openvla/publisher.json`。新检出的项目按 Skill 准备材料。
 
-```json
-{
-  "canonical": "arxiv:2406.09246v3",
-  "version": "2406.09246v3",
-  "source": "https://arxiv.org/html/2406.09246v3",
-  "pdf_url": "https://arxiv.org/pdf/2406.09246v3",
-  "aliases": ["10.48550/arXiv.2406.09246", "https://proceedings.mlr.press/v270/kim25c.html"],
-  "title": "OpenVLA: An Open-Source Vision-Language-Action Model",
-  "short_title": "OpenVLA",
-  "authors": ["Moo Jin Kim", "…"],
-  "date": "2024-09-05",
-  "entry": {"itemType": "preprint", "repository": "arXiv", "url": "https://arxiv.org/abs/2406.09246v3"},
-  "pdf": "2406.09246v3.pdf",
-  "note": "guide.html"
-}
+同步前可只读检查库内已有论文和版本，确认后导出已核实的 PDF 副本。
+
+```powershell
+python -X utf8 scripts/zotero_lookup.py "OpenVLA"
+python -X utf8 scripts/zotero_lookup.py "OpenVLA" --export-version "arxiv:2406.09246v3"
 ```
 
-正式版将 `canonical` 和 `version` 均设为带版本的出版标识（如 `pmlr:v270/kim25c@vor`），并填写 `pdf_sha256`，取值为从该篇出版记录所指链接取得的原始文件哈希。导读用 HTML 标题首行记录固定标记、简称及括号内的版本。脚本只操作当前 Zotero 实例的个人库。首次写入由 Zotero 弹窗授权。密钥默认只存在本次运行的内存中，已持有本地授权密钥时也可通过 `ZOTERO_LOCAL_API_KEY` 提供。完整重跑只需读权限。退出码 0 表示读回核验通过。
+脚本操作 Zotero Desktop 10 个人库。首次写入由 Zotero 弹窗授权，密钥默认保留在本次运行内存中；也可通过 `ZOTERO_LOCAL_API_KEY` 提供已取得的本地密钥。同步退出码 0 表示本机回读通过，内容事实按核验表另行验收。
+
+## 使用项目 Skill
+
+在本仓库目录打开 Codex 新对话，输入“帮我读 OpenVLA”。也可显式输入“用 $embodied-paper-reader 帮我读 OpenVLA”。Skill 根据请求查找论文、核对版本、读取全文、生成带重点加粗的中文导读，再调用脚本同步到 Zotero。只请求摘要或选文时按对应范围交付。
+
+Skill 随仓库使用，引用根目录脚本与核验表。使用 Git 克隆完整仓库后，从仓库目录启动对话。
+
+已在本机独立对话中验证自动触发、OpenVLA 已有版本复用、Octo 首次获取与入库、固定时间窗的六篇主题路线，以及选定 RT-2 v1 后的精读与入库。三篇单篇测试均取得重复执行零新增的记录。原文统计口径和未公开复现材料的缺项按核验表保留待验证。这些记录覆盖当前本机环境，其他 Zotero 版本与部署环境仍需实测。
 
 ## 开发顺序
 

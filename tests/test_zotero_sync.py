@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import pymupdf
 
@@ -110,3 +111,12 @@ class SyncTest(unittest.TestCase):
     def test_doi_filename(self):
         self.assertEqual(sync.audit_path("doi:10.1109/lra.2024.3350982@vor").name,
                          "doi_10.1109_lra.2024.3350982_b17a9ffde63a88ce.json")
+
+    def test_uppercase_doi_filename_preserves_existing_audit(self):
+        canonical = "doi:10.15607/RSS.2024.XX.090@vor"
+        with patch.object(sync, "AUDITS", self.folder):
+            expected = self.folder / ("doi_10.15607_rss.2024.xx.090_" + sync.digest(canonical)[:16] + ".json")
+            self.assertEqual(sync.audit_path(canonical), expected)
+            legacy = self.folder / ("doi_10.15607_.2024._.090_" + sync.digest(canonical)[:16] + ".json")
+            sync.persist(legacy, {"canonical": canonical, "runs": []})
+            self.assertEqual(sync.audit_path(canonical), legacy)

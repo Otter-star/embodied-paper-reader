@@ -71,9 +71,14 @@ def audit_path(canonical):
     kind, identifier = canonical.split(":", 1)
     if kind == "arxiv" and re.fullmatch(r"\d{4}\.\d{4,5}v\d+", identifier):
         return AUDITS / f"arxiv_{identifier}.json"
-    prefix = re.sub(r"[^a-z0-9.-]+", "_", kind + "_" + identifier.split("@")[0])[:64]
+    readable = kind + "_" + identifier.split("@")[0]
+    prefix = re.sub(r"[^a-z0-9.-]+", "_", readable.lower())[:64]
     h = digest(canonical)
     path = AUDITS / f"{prefix}_{h[:16]}.json"
+    legacy_prefix = re.sub(r"[^a-z0-9.-]+", "_", readable)[:64]
+    legacy_path = AUDITS / f"{legacy_prefix}_{h[:16]}.json"
+    if not path.exists() and legacy_path.exists():
+        path = legacy_path
     if path.exists() and json.loads(path.read_text("utf8"))["canonical"] != canonical:
         path = AUDITS / f"{prefix}_{h}.json"
     return path
