@@ -72,4 +72,4 @@ python -X utf8 scripts/paper_workflow.py resume local/workflows/<任务>/task.js
 
 当前 Windows 桌面内嵌套启动 CLI 的实测报 registered Core launch requires an installed app；已有同版本的[上游复现](https://github.com/openai/codex/issues/60633)。本机只读诊断也观察到 Python 子进程缺少 OS 包身份。这一后台路径目前待验证；不能用桌面执行成功宣称它已修复。项目保留权限设置，不更改注册表、沙箱、应用包或注册 Core 标记，也不自动回退后冒充 CLI 成功。
 
-2026-11-15 已验证桌面方式的只读任务登记、阶段记录、完成和同任务再次续跑：历史状态保留为 pending → completed → completed，查询结果及父子对象不变、库记录写入 0。完整精读与主题路线的 Skill 已有独立样品；持久任务版本仍需随实际使用分别验证。没有新增服务、定时任务或云端部署。
+2026-11-15 已验证桌面方式的只读任务登记、阶段记录、完成和同任务再次续跑：历史状态保留为 pending → completed → completed，查询结果及父子对象不变、库记录写入 0。π₀ 的持久精读已交付同版全文、导读及入库回读，其原文歧义如实保留待补。固定窗路线也完成了仓库外独立验证：2022 年至 2024-10-31、6 篇 v1、11 条实际查询、4 篇邻近工作取舍，四项检查通过、状态 completed、库写入 0。开放时间窗的选文仍须当次实际检索。没有新增服务、定时任务或云端部署。
