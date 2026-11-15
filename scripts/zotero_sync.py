@@ -16,6 +16,13 @@ from filelock import FileLock, Timeout
 import pymupdf
 import requests
 
+if os.name == "nt":
+    from keyring.backends.Windows import WinVaultKeyring, pywintypes
+    from keyring.errors import KeyringError
+    CREDENTIAL_ERRORS = (OSError, KeyringError, pywintypes.error)
+else:
+    CREDENTIAL_ERRORS = (OSError,)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 AUDITS = ROOT / "local" / "zotero-audit"
@@ -23,6 +30,11 @@ BASE = "http://127.0.0.1:23119"
 ITEMS = "/api/users/0/items"
 MARKER = "[embodied-paper-reader] 中文导读"
 ARXIV = r"(?:\d{4}\.\d{4,5}|[a-z.-]+/\d{7})"
+AUTH_SERVICE = "embodied-paper-reader/ZoteroLocalAPI"
+
+
+def credential_backend():
+    return WinVaultKeyring() if os.name == "nt" else None
 
 
 class Pending(Exception):
@@ -162,6 +174,8 @@ class Zotero:
         self.server = response.headers["Zotero-Server-ID"]
         self.http.headers["Zotero-Server-ID"] = self.server
         self.key = os.environ.get("ZOTERO_LOCAL_API_KEY")
+        self.environment_key = bool(self.key)
+        self.credentials_checked = False
         self.once = False
 
     def call(self, method, path, **kwargs):
@@ -174,18 +188,43 @@ class Zotero:
         # The local API returns all matches by default, unlike the Web API.
         return [row["data"] for row in self.call("GET", ITEMS + suffix).json()]
 
-    def write(self, method, path, **kwargs):
+    def credential(self, operation, *values):
+        try:
+            backend = credential_backend()
+            if backend:
+                result = getattr(backend, operation)(AUTH_SERVICE, self.server, *values)
+                return result if operation == "get_password" else True
+        except CREDENTIAL_ERRORS:
+            print("本机凭据存储不可用；本次授权仅保留在内存，后续可能再次询问。", flush=True)
+
+    def authorize(self):
+        if not self.key and not self.credentials_checked:
+            self.credentials_checked = True
+            self.key = self.credential("get_password")
         if not self.key:
-            print("请在 Zotero 中授权 embodied-paper-reader 写入个人库。", flush=True)
+            print("请在 Zotero 中选择“始终允许”，后续可复用本机授权。", flush=True)
             grant = self.call("POST", "/api/local/authorize", json={"appName": "embodied-paper-reader"}, timeout=240).json()
             self.key = grant["key"]
             self.once = not grant["remember"]
-        headers = {"Zotero-API-Key": self.key, **kwargs.pop("headers", {})}
-        try:
-            return self.call(method, path, headers=headers, **kwargs)
-        finally:
-            if self.once:
+            if grant["remember"]:
+                self.credential("set_password", self.key)
+
+    def write(self, method, path, **kwargs):
+        extra_headers = kwargs.pop("headers", {})
+        for attempt in range(2):
+            self.authorize()
+            headers = {"Zotero-API-Key": self.key, **extra_headers}
+            try:
+                return self.call(method, path, headers=headers, **kwargs)
+            except requests.HTTPError as error:
+                if error.response.status_code != 401 or attempt or self.environment_key:
+                    raise
+                self.credential("delete_password")
                 self.key = None
+                self.once = False
+            finally:
+                if self.once:
+                    self.key = None
 
     def create(self, fields):
         result = self.write("POST", ITEMS, json=[fields]).json()
@@ -420,12 +459,28 @@ def main(manifest):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("manifest", type=Path)
+    parser.add_argument("manifest", type=Path, nargs="?")
+    parser.add_argument("--authorize", action="store_true", help="Authorize once and store reusable access in Windows credentials")
+    parser.add_argument("--forget-authorization", action="store_true", help="Remove this Zotero instance's cached credential")
     try:
-        raise SystemExit(main(parser.parse_args().manifest))
+        args = parser.parse_args()
+        if sum((bool(args.manifest), args.authorize, args.forget_authorization)) != 1:
+            parser.error("提供一个清单，或选择 --authorize / --forget-authorization")
+        if args.authorize:
+            client = Zotero()
+            client.authorize()
+            print("本机授权已取得。" if not client.once else "本次仅单次授权；选择“始终允许”后才能跨进程复用。")
+            raise SystemExit(0)
+        if args.forget_authorization:
+            cleared = Zotero().credential("delete_password")
+            print("已清除当前 Zotero 实例的本机授权缓存。" if cleared else "没有清除缓存；请检查本机凭据存储。")
+            raise SystemExit(0 if cleared else 1)
+        raise SystemExit(main(args.manifest))
     except Pending as error:
         raise SystemExit("待验证：" + str(error))
     except Timeout:
         raise SystemExit("待验证：另一同步正在运行，完成后重试")
+    except requests.RequestException as error:
+        raise SystemExit("待验证：" + error_summary(error))
     except (ValueError, OSError, KeyError) as error:
         raise SystemExit("待验证：清单或审计文件读写失败 (" + type(error).__name__ + ")")

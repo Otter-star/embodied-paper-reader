@@ -2,3 +2,4 @@ beautifulsoup4>=4.12
 filelock>=3.13
 PyMuPDF>=1.24
 requests>=2.31
+keyring>=25.6,<26; sys_platform == "win32"

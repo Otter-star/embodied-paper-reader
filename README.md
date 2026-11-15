@@ -4,6 +4,16 @@
 
 项目 Skill 位于 [.agents/skills/embodied-paper-reader/](.agents/skills/embodied-paper-reader/SKILL.md)，配套[验收表](docs/acceptance.md)与本机 Zotero 脚本。OpenVLA 已用于验证正式版与 arXiv v3 的入库及重试。
 
+## 一句话安装
+
+把下面这句话发给具有本机文件、命令和联网能力的 Codex：
+
+> 帮我安装这个工作流：https://github.com/Otter-star/embodied-paper-reader
+
+**给安装 Agent：先读[安装说明](INSTALL.md)，克隆完整仓库、安装依赖并建立用户级 Skill 链接，再核验安装结果。** 这个 Skill 依赖仓库内的脚本和核验表，仅复制 Skill 文件夹会缺文件。当前安装入口已面向 Windows + Codex + Zotero Desktop 10；其他 Agent 或系统尚未验收。Zotero 插件可选，不需要额外模型 API Key。私有仓库需要使用者有访问权限。
+
+安装后可在其他项目直接说“帮我读 OpenVLA”“用工作流精读 π₀，并存入 Zotero”或“我库里有 OpenVLA 吗”，不需要固定提示词。首次实际写入 Zotero 时选择一次“始终允许”，Windows 版后续复用系统凭据；安装本身不读取论文库或触发写入授权。
+
 ## 请求方式
 
 - **指定论文**。例如“帮我读 OpenVLA”。根据标题、作者、团队、日期或论文标识辨认目标。优先读你指定的版本；未指定时先复用库中已核实的全文。另行获取时优先正式出版版，其次采用最新可核实的 arXiv 修订。交付中文导读，并在本机 Zotero 的同一父条目下保存该版 PDF 和导读子笔记。
@@ -51,7 +61,15 @@ python -X utf8 scripts/zotero_lookup.py "OpenVLA"
 python -X utf8 scripts/zotero_lookup.py "OpenVLA" --export-version "arxiv:2406.09246v3"
 ```
 
-脚本操作 Zotero Desktop 10 个人库。首次写入由 Zotero 弹窗授权，密钥默认保留在本次运行内存中；也可通过 `ZOTERO_LOCAL_API_KEY` 提供已取得的本地密钥。同步退出码 0 表示本机回读通过，内容事实按核验表另行验收。
+脚本操作 Zotero Desktop 10 个人库。首次授权选择“始终允许 / Always Allow”后，Windows 版会把可复用密钥存入系统凭据管理器，按 Zotero 实例隔离，后续进程直接复用。选择单次“允许”时不保存；授权被撤销后仅重新授权并重试一次。只读查询不访问密钥，也不触发写入授权。也可通过 `ZOTERO_LOCAL_API_KEY` 显式提供本地密钥。同步退出码 0 表示本机回读通过，内容事实按核验表另行验收。
+
+可提前完成授权而不修改任何库记录：
+
+```powershell
+python -X utf8 scripts/zotero_sync.py --authorize
+```
+
+密钥不写入仓库、local 审计、日志或对话。`--forget-authorization` 清除当前 Zotero 实例在本工作流中的缓存；Zotero 设置→高级中的“清除写入授权”可撤销应用授权。其他系统当前保留进程内授权方式。
 
 运行本地隔离测试使用以下命令，测试以模拟库和临时文件验证同步行为。
 
@@ -69,15 +87,17 @@ Skill 引用仓库根目录脚本与核验表。[项目指引](AGENTS.md)将仓�
 
 ### 在其他项目中使用
 
-Windows 上克隆完整仓库并安装 Python 依赖后，在仓库根目录运行一次用户级安装。
+Windows 上克隆完整仓库后，在仓库根目录运行一次用户级安装。完整的 Agent 安装、核验与更新步骤见 [INSTALL.md](INSTALL.md)。
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_skill.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_skill.ps1 -InstallDependencies
 ```
 
-安装脚本在用户目录的 `.agents/skills/embodied-paper-reader` 创建指向本仓库 Skill 的目录链接（Junction）。重复运行保留相同链接，已有其他文件或目录时停止并保留原内容。命令中的执行策略仅作用于本次 PowerShell 进程。脚本不修改全局提示词或 Zotero 设置，也不复制论文与审计。Codex 支持用户级 Skill 和链接目录，见 [OpenAI 官方说明](https://learn.chatgpt.com/docs/build-skills)。
+安装脚本检查完整仓库，安装并实际导入 Python 依赖，然后在用户目录的 `.agents/skills/embodied-paper-reader` 创建指向本仓库 Skill 的目录链接（Junction）。重复运行会重新检查依赖并保留相同链接，已有其他文件或目录时停止并保留原内容。只需链接且已准备好依赖时可省略 `-InstallDependencies`。命令中的执行策略仅作用于本次 PowerShell 进程。脚本不修改全局提示词或 Zotero 设置，也不复制论文与审计。Codex 支持用户级 Skill 和链接目录，见 [OpenAI 官方说明](https://learn.chatgpt.com/docs/build-skills)。
 
 安装后在其他项目的新对话输入“用 $embodied-paper-reader 查找我 Zotero 库中的 OpenVLA”。之后也可用自然语言触发。脚本、导读和审计仍使用原仓库，因此仓库需要保留在本机，移动后需重新设置链接。当前项目的文件访问和本机 API 权限仍适用；自动发现是否成功，以新对话实际载入本 Skill 为准。
+
+2026-11-15 已用完整仓库副本、全新 Python 环境和隔离 Skill 目录验证依赖安装、链接解析、重复安装、已有内容保留及不完整仓库拒绝；新环境的 41 项隔离回归通过。安装验证向 Zotero 发出的请求为 0，也未改变实际用户 Skill 链接。
 
 2026-11-15 已在仓库外聊天中通过显式指定 `SKILL.md` 路径完成只读找回：返回书目、两版可用 PDF、笔记状态及零写入结果。该次请求未测试自然语言自动选择 Skill。
 
