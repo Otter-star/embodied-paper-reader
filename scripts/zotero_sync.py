@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import unicodedata
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
@@ -33,7 +34,7 @@ def digest(text):
 
 
 def normalized(text):
-    return "".join(c for c in text.casefold() if c.isalnum())
+    return "".join(c for c in unicodedata.normalize("NFKC", text).casefold() if c.isalnum())
 
 
 def identifiers(text):
@@ -46,19 +47,41 @@ def identifiers(text):
 
 
 def match_parent(items, paper):
-    wanted = identifiers("\n".join([paper["canonical"], paper["source"], *paper["aliases"]]))
-    exact, fallback = [], []
+    canonical_identifier = paper["canonical"].rsplit("@", 1)[0]
+    wanted = identifiers("\n".join([canonical_identifier, paper["source"], *paper["aliases"]]))
+    wanted_strong = {s for s in wanted if s.startswith(("arxiv:", "10."))}
+    exact, url_matches, fallback = [], [], []
+    conflicting = False
     for item in items:
         if item["itemType"] in {"attachment", "note", "annotation"}:
             continue
         fields = ["DOI", "url", "extra", "archiveID"]
-        if identifiers("\n".join(item.get(k, "") for k in fields)) & wanted:
+        existing = identifiers("\n".join(item.get(k, "") for k in fields))
+        if existing & wanted_strong:
             exact.append(item)
+            continue
         authors = [a for a in item.get("creators", []) if a["creatorType"] == "author"]
-        if (normalized(item.get("title", "")) == normalized(paper["title"]) and authors
-                and normalized(authors[0].get("lastName", "")) == normalized(paper["authors"][0].rsplit(" ", 1)[-1])):
+        first_author = authors[0] if authors else {}
+        surname = first_author.get("lastName") or first_author.get("name", "").rsplit(" ", 1)[-1]
+        same_title_author = (normalized(item.get("title", "")) == normalized(paper["title"]) and surname
+                             and normalized(surname) ==
+                             normalized(paper["authors"][0].rsplit(" ", 1)[-1]))
+        if not (existing & wanted or same_title_author):
+            continue
+        for prefix in ("arxiv:", "10."):
+            requested = {s for s in wanted if s.startswith(prefix)}
+            present = {s for s in existing if s.startswith(prefix)}
+            if requested and present and requested.isdisjoint(present):
+                conflicting = True
+        if existing & wanted:
+            url_matches.append(item)
+        elif same_title_author:
             fallback.append(item)
-    return unique(exact or fallback, "父条目")
+    if exact:
+        return unique(exact, "父条目")
+    if conflicting:
+        raise Pending("候选父条目的 DOI 或 arXiv 标识冲突，需要消歧")
+    return unique(url_matches or fallback, "父条目")
 
 
 def unique(items, label):
@@ -109,7 +132,9 @@ def verify_source(paper, pdf):
         printed = re.findall(r"arXiv:\s*(" + ARXIV + r"v\d+)\b", pdf["first_page"], re.I)
         source = urlsplit(paper["source"])
         if (paper["version"] != version or set(printed) != {version} or source.hostname != "arxiv.org"
-                or source.path.rstrip("/") not in {"/html/" + version, "/pdf/" + version, "/abs/" + version}):
+                or source.path.rstrip("/") not in {
+                    "/html/" + version, "/pdf/" + version, "/pdf/" + version + ".pdf", "/abs/" + version
+                }):
             raise Pending("arXiv 正文版本与 PDF 首页未匹配")
     elif canonical != paper["version"] or pdf["sha256"] != paper["pdf_sha256"]:
         raise Pending("正式版文件与沿出版记录取得的 PDF 哈希不符")
@@ -132,6 +157,7 @@ class Zotero:
         return result
 
     def items(self, suffix):
+        # The local API returns all matches by default, unlike the Web API.
         return [row["data"] for row in self.call("GET", ITEMS + suffix).json()]
 
     def write(self, method, path, **kwargs):
@@ -154,7 +180,12 @@ class Zotero:
         return result["successful"]["0"]["key"]
 
     def file_path(self, key):
-        url = self.call("GET", f"{ITEMS}/{key}/file/view/url").text.strip()
+        try:
+            url = self.call("GET", f"{ITEMS}/{key}/file/view/url").text.strip()
+        except requests.HTTPError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
         return Path(url2pathname(urlsplit(url).path)) if url.startswith("file:") else None
 
     def upload(self, key, path, expected_sha256):
@@ -173,7 +204,11 @@ class Zotero:
 
 
 def note_title(html):
-    lines = BeautifulSoup(html, "html.parser").get_text("\n", strip=True).splitlines()
+    soup = BeautifulSoup(html, "html.parser")
+    heading = soup.find("h1")
+    if heading:
+        return heading.get_text(" ", strip=True)
+    lines = (soup.body or soup).get_text("\n", strip=True).splitlines()
     return lines[0] if lines else ""
 
 
@@ -182,7 +217,8 @@ def note_body(html):
     soup = BeautifulSoup(html, "html.parser")
     for wrapper in soup.select("div[data-schema-version]"):
         wrapper.unwrap()
-    return "".join(str(e) for e in soup.contents if str(e).strip())
+    body = soup.body or soup
+    return "".join(str(e) for e in body.contents if str(e).strip())
 
 
 def inventory(client, paper, source_pdf, audit):
@@ -209,16 +245,18 @@ def inventory(client, paper, source_pdf, audit):
             fingerprint = sha256(path.read_bytes()).hexdigest()
             if fingerprint == source_pdf["sha256"]:
                 pdfs.append({"key": item["key"], **inspect_pdf(path)})
-            elif same_url:
-                raise Pending("已有附件与目标 PDF 内容不一致，需要核对版本")
             elif paper["canonical"].startswith("arxiv:"):
                 # An existing copy can have different bytes (e.g. embedded annotations).
                 try:
                     pdf = inspect_pdf(path)
                     verify_source(paper, pdf)
                 except (Pending, pymupdf.FileDataError):
+                    if same_url:
+                        raise Pending("已有附件与目标 PDF 版本或身份冲突，需要核对")
                     continue
                 pdfs.append({"key": item["key"], **pdf})
+            elif same_url:
+                raise Pending("已有附件与目标 PDF 内容不一致，需要核对版本")
     found.update(note=unique(notes, "工作流导读"), pdf=unique(pdfs, "同版 PDF"))
     return found
 
@@ -231,7 +269,7 @@ def sync(client, paper, folder, audit, path, run):
     pdf_path = folder / paper["pdf"]
     source_pdf = inspect_pdf(pdf_path)
     verify_source(paper, source_pdf)
-    guide = (folder / paper["note"]).read_text("utf8").strip()
+    guide = note_body((folder / paper["note"]).read_text("utf8").strip())
     title = note_title(guide)
     if not (title.startswith(MARKER) and title.endswith("(" + paper["version"] + ")")):
         raise Pending("导读标题的论文版本未匹配")
@@ -274,8 +312,61 @@ def sync(client, paper, folder, audit, path, run):
                delta=[int(bool(b)) - int(bool(a)) for a, b in zip(run["before"], run["after"])])
 
 
+def validate_manifest(paper):
+    if not isinstance(paper, dict):
+        raise Pending("清单必须是 JSON 对象")
+    required = ["canonical", "version", "title", "short_title", "date", "authors",
+                "aliases", "source", "pdf_url", "entry", "pdf", "note"]
+    canonical = paper.get("canonical", "")
+    if isinstance(canonical, str) and not canonical.startswith("arxiv:"):
+        required.append("pdf_sha256")
+    missing = [field for field in required if field not in paper]
+    if missing:
+        raise Pending("清单缺少：" + "、".join(missing))
+    for field in required:
+        if field not in {"authors", "aliases", "entry"}:
+            if not isinstance(paper[field], str) or not paper[field].strip():
+                raise Pending("清单 " + field + " 需为非空字符串")
+    for field in ("authors", "aliases"):
+        if not isinstance(paper[field], list) or not all(
+            isinstance(value, str) and value.strip() for value in paper[field]
+        ):
+            raise Pending("清单 " + field + " 需为字符串列表")
+    if not paper["authors"]:
+        raise Pending("清单 authors 需包含至少一名作者")
+    if not isinstance(paper["entry"], dict):
+        raise Pending("清单 entry 需为对象")
+    if not isinstance(paper["entry"].get("itemType"), str) or not paper["entry"]["itemType"].strip():
+        raise Pending("清单 entry.itemType 需为非空字符串")
+
+
+def error_summary(exc):
+    if isinstance(exc, Pending):
+        return str(exc)
+    if isinstance(exc, requests.HTTPError):
+        response = exc.response
+        if response.status_code == 401:
+            return "Zotero 写入授权无效或已失效；重新授权，或更新 ZOTERO_LOCAL_API_KEY 后重跑"
+        if response.status_code == 403:
+            route = urlsplit(response.request.url).path if response.request else ""
+            if route == "/api/local/authorize":
+                return "Zotero 写入授权未获准；检查本机 API 设置和本地授权窗口的选择后重跑"
+            if route == "/api/":
+                return "Zotero 拒绝访问；在设置→高级启用“允许此计算机上的其他应用程序与 Zotero 通信”后重跑"
+            return "Zotero 拒绝此操作（HTTP 403）；检查该操作的访问条件及本地审计后重跑"
+        return f"Zotero HTTP {response.status_code}；详见本地审计"
+    if isinstance(exc, requests.ConnectionError):
+        if re.search(r"\b10013\b", str(exc)):
+            return "执行环境拒绝本机连接（WinError 10013）；申请本机访问权限后重跑，再核实 Zotero 运行状态"
+        return "无法连接 Zotero 本机 23119 端口；确认 Zotero 已启动，并检查本机访问权限后重跑"
+    if isinstance(exc, requests.Timeout):
+        return "Zotero 请求超时；检查本地授权窗口及连接状态后重跑"
+    return type(exc).__name__
+
+
 def main(manifest):
     paper = json.loads(manifest.read_text("utf8"))
+    validate_manifest(paper)
     path = audit_path(paper["canonical"])
     path.parent.mkdir(parents=True, exist_ok=True)
     # A single lock also serializes different versions that share a parent.
@@ -296,9 +387,8 @@ def main(manifest):
             if isinstance(exc, requests.RequestException) and exc.request is not None:
                 run["request_method"] = exc.request.method
                 run["request_route"] = re.sub(r"/uploads/[^/]+", "/uploads/<token>", urlsplit(exc.request.url).path)
-            summary = str(exc) if isinstance(exc, Pending) else type(exc).__name__
+            summary = error_summary(exc)
             if isinstance(exc, requests.HTTPError):
-                summary = f"Zotero HTTP {exc.response.status_code}"
                 run["response"] = exc.response.text
         persist(path, audit)
         print(run["time"], run["status"], summary, path.relative_to(ROOT).as_posix())
@@ -310,6 +400,8 @@ if __name__ == "__main__":
     parser.add_argument("manifest", type=Path)
     try:
         raise SystemExit(main(parser.parse_args().manifest))
+    except Pending as error:
+        raise SystemExit("待验证：" + str(error))
     except Timeout:
         raise SystemExit("待验证：另一同步正在运行，完成后重试")
     except (ValueError, OSError, KeyError) as error:

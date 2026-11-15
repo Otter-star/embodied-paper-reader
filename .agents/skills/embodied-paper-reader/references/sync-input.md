@@ -8,11 +8,11 @@
 | --- | --- |
 | canonical | 包含论文与所选版本的规范标识，如 arxiv:2406.09246v3、doi:10.1234/example@vor、pmlr:v270/kim25c@vor。 |
 | version | arXiv 用 2406.09246v3；正式版与 canonical 相同。用于匹配笔记首行括号。 |
-| source | 实际读取的版本化 HTML、摘要记录或该篇出版记录。arXiv 限 arxiv.org 的 /html/、/abs/、/pdf/ 版本化地址。 |
+| source | 实际读取的版本化 HTML、摘要记录或该篇出版记录。arXiv 接受 arxiv.org 的 /html/、/abs/、/pdf/ 版本化地址，包含 /pdf/2406.09246v3.pdf 这样的 PDF 后缀形式。 |
 | pdf_url | 实际取得该版 PDF 的来源地址。 |
 | aliases | 跨出版形态查重线索，数组，至少包含已核实的 arXiv ID、DOI 或出版记录 URL。 |
 | title、short_title | 原文完整标题与可读简称。 |
-| authors | 按当前版本作者顺序填全，每项为“名 姓”。当前脚本按最后一个空格拆姓氏，复姓或团体作者需核实表示及查重结果。 |
+| authors | 字符串列表，按当前版本作者顺序填全，每项为“名 姓”。查库兼容单字段个人作者 name，按末词兜底比较姓氏；写入仍按最后一个空格拆姓氏，复姓或团体作者需核实表示及查重结果。 |
 | date | 本版本日期或正式出版年，首次公开日期另记导读。 |
 | entry | Zotero 字段字典。预印本用 itemType=preprint，正式会议论文用 conferencePaper。字段名按 Zotero 类型填写，如 repository、url、archiveID、proceedingsTitle、pages、volume、publisher。复用已有父项时保留其书目信息。 |
 | pdf、note | 相对于清单目录的 PDF 与导读 HTML 文件名。 |
@@ -20,15 +20,40 @@
 
 先按身份与版本选定材料再填写清单。文件名使用便于跨平台的 ASCII 安全标识。
 
+清单顶层为 JSON 对象。authors 和 aliases 使用字符串列表，entry 使用包含非空字符串 itemType 的对象，其余必填字段使用非空字符串。正式版另需 pdf_sha256。字段缺失或类型不合适时，在访问 Zotero 前报告待补。
+
+## 本地工作目录
+
+新材料统一放在 `local/papers/<安全标识>/`，例如 `local/papers/arxiv_2307.15818v1/`。安全标识包含论文和版本，避免 Windows 文件名中的斜杠、冒号等特殊字符。沿用旧样品与共享的 PDF 时，清单可用相对路径引用已有材料，无需搬动或复制。
+
+```text
+local/papers/<安全标识>/
+  paper.json       同步清单
+  paper.pdf        该版 PDF，也可由清单引用已有文件
+  guide.html       本地图文导读
+  guide.md         需要 Markdown 时导出
+  note.html        单独准备入库文本时使用
+  acceptance.md    本轮内容核验
+  figures/
+    figure-2.png
+    figure-2.json  图片来源、版本、页码与裁剪坐标
+```
+
+路线记录留在 `local/routes/`，同步和查库详单留在 `local/zotero-audit/`。`local/openvla/` 属于早期样品目录，现有路径继续有效。
+
 ## 笔记和内容核验
 
-HTML 以 `<h1>[embodied-paper-reader] 中文导读 · 简称 (version)</h1>` 起始。正文使用 p、h2、ul/li、a 与 strong 即可。导读头部包含实际版本、选版依据、取证日、内容核验状态和待补原因。关键数字在对应句末定位到该版章节或图表。
+HTML 主标题采用 `<h1>[embodied-paper-reader] 中文导读 · 简称 (version)</h1>`。可提供片段或包含 head/title/body 的完整文档；同步时读取 h1 并提取 body 正文。无 h1 时回退到正文首个非空文本行。正文使用 p、h2、ul/li、a 与 strong 即可。导读头部包含实际版本、选版依据、取证日、内容核验状态和待补原因。关键数字在对应句末定位到该版章节或图表。
+
+完整精读内容采用[精读结构与配图](reading-guide.md)的六段讲解顺序。带裁图的本地 HTML 与用于 Zotero 同步的笔记可分别保存，清单的 note 指向后者。当前脚本上传 PDF 与笔记正文；本地相对图片引用须转换成原文图号、说明和一手链接，再准备同步清单。
 
 在清单旁保存 acceptance.md，逐项填写根目录核验表的状态与实际读取证据。父条目及两个子项的实测由同步审计补充；正文事实由 Agent 对照一手材料核验。只有摘要时仍可保存概览，当前同步脚本需要 PDF，缺 PDF 的入库标待验证。
 
 ## 查库和同步结果
 
 `zotero_lookup.py` 的 verified_version 来源为本机已通过审计的 PDF 哈希，或与父条目标题一致的 PDF 首页 arXiv 版本标记。未知正式版可按出版记录与文件哈希另行核验。导出副本位于 local/papers/ 下，文件名含哈希，用户随后可用该文件准备清单。
+
+只读找回也使用此入口。返回的 file_available 表示该附件本地文件可用；has_notes 表示父条目下存在笔记，workflow_note_count 只统计本工作流固定标记的笔记。它们用于定位资料，笔记内容正确性仍需另行回读核验。
 
 `zotero_sync.py` 按标识符、归一化标题加第一作者查重。每版审计保留运行历史、父子关系、PDF 哈希及笔记写入哈希。失败或中断后先查本机记录与实际对象，再运行同一清单补缺。沿用审计原样恢复，核对三个 Key 及计数。输出的 0/0/0 表示三类对象均无新增，更新笔记内容仍可能发生。
 

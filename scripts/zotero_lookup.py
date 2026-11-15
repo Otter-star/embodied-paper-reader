@@ -8,7 +8,10 @@ from urllib.parse import quote
 
 import requests
 
-from zotero_sync import AUDITS, ARXIV, ROOT, Pending, Zotero, digest, inspect_pdf, normalized, persist
+from zotero_sync import (
+    AUDITS, ARXIV, ROOT, MARKER, Pending, Zotero, digest, error_summary,
+    inspect_pdf, normalized, note_title, persist,
+)
 
 
 def known_versions(server):
@@ -35,6 +38,9 @@ def lookup(client, query):
         paper = {k: parent.get(k, "") for k in ("title", "date", "DOI", "url")}
         paper["authors"] = [a.get("name") or " ".join([a.get("firstName", ""), a.get("lastName", "")]).strip()
                             for a in parent.get("creators", []) if a["creatorType"] == "author"]
+        notes = [child for child in children if child["itemType"] == "note"]
+        paper["has_notes"] = bool(notes)
+        paper["workflow_note_count"] = sum(note_title(note["note"]).startswith(MARKER) for note in notes)
         paper["pdfs"] = []
         for child in children:
             if child["itemType"] != "attachment" or child.get("contentType") != "application/pdf":
@@ -50,7 +56,8 @@ def lookup(client, query):
                         version = "arxiv:" + printed.pop()
                     if version:
                         files.append({"canonical": version, "path": path, "sha256": pdf["sha256"]})
-            paper["pdfs"].append({"source_url": child.get("url", ""), "verified_version": version})
+            paper["pdfs"].append({"source_url": child.get("url", ""), "verified_version": version,
+                                  "file_available": bool(path and path.is_file())})
         papers.append(paper)
     return papers, files, raw
 
@@ -81,8 +88,7 @@ def main():
         return 0
     except (Pending, requests.RequestException, OSError, ValueError, KeyError, RuntimeError) as exc:
         persist(record, {"error": str(exc)})
-        print("待验证", str(exc) if isinstance(exc, Pending) else type(exc).__name__,
-              record.relative_to(ROOT).as_posix())
+        print("待验证", error_summary(exc), record.relative_to(ROOT).as_posix())
         return 1
 
 
