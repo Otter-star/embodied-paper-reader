@@ -1,4 +1,7 @@
 import copy
+from contextlib import redirect_stdout
+from datetime import datetime, timedelta, timezone
+import io
 import json
 from pathlib import Path
 import sys
@@ -68,6 +71,18 @@ class SyncTest(unittest.TestCase):
         with pymupdf.open() as doc:
             doc.new_page().insert_text((50, 50), "Test Paper\nA. Author\narXiv:" + version)
             doc.save(self.folder / "paper.pdf")
+
+    def make_scanned_pdf(self):
+        path = self.folder / "paper.pdf"
+        with pymupdf.open(path) as doc:
+            text = doc[0].get_text()
+            image = doc[0].get_pixmap().tobytes("png")
+        with pymupdf.open() as doc:
+            page = doc.new_page()
+            page.insert_image(page.rect, stream=image)
+            data = doc.tobytes()
+        path.write_bytes(data)
+        return text
 
     def execute(self):
         run = {}
@@ -347,3 +362,174 @@ class SyncTest(unittest.TestCase):
             self.library.files.clear()
             papers, _, _ = lookup.lookup(self.library, "Test")
             self.assertFalse(papers[0]["pdfs"][0]["file_available"])
+
+    def test_lookup_persists_pdf_verification_evidence_and_redacts_stdout(self):
+        audit_folder = self.folder / "local" / "zotero-audit"
+        audit_folder.mkdir(parents=True)
+        self.library.server = "INTERNAL-SERVER-ID"
+        parent, verified, printed, note = (
+            "INTERNALPARENT01", "INTERNALPDF01", "INTERNALPDF02", "INTERNALNOTE01",
+        )
+        private_note = "Private reading notes must remain local"
+        self.library.rows = {
+            parent: dict(key=parent, itemType="preprint", title="Test Paper",
+                         creators=[dict(creatorType="author", name="A. Author")]),
+            verified: dict(key=verified, itemType="attachment", parentItem=parent,
+                           contentType="application/pdf", url=self.paper["pdf_url"]),
+            printed: dict(key=printed, itemType="attachment", parentItem=parent,
+                          contentType="application/pdf", url="https://arxiv.org/pdf/2406.00001v2"),
+            note: dict(key=note, itemType="note", parentItem=parent, note="<p>" + private_note + "</p>"),
+        }
+        first = self.folder / "private-verified-storage.pdf"
+        first.write_bytes((self.folder / "paper.pdf").read_bytes())
+        self.make_pdf("2406.00001v2")
+        second = self.folder / "private-printed-storage.pdf"
+        second.write_bytes((self.folder / "paper.pdf").read_bytes())
+        self.library.files = {verified: first, printed: second}
+        prior = audit_folder / "verified_sync.json"
+        sync.persist(prior, {
+            "server": self.library.server, "canonical": self.paper["canonical"],
+            "runs": [{"status": "通过", "pdf": sync.inspect_pdf(first)}],
+        })
+        original_rows = copy.deepcopy(self.library.rows)
+        output = io.StringIO()
+        with patch.object(lookup, "ROOT", self.folder), patch.object(lookup, "AUDITS", audit_folder), \
+                patch.object(lookup, "Zotero", return_value=self.library), \
+                patch.object(self.library, "create") as create, patch.object(self.library, "write") as write, \
+                patch.object(self.library, "upload") as upload, \
+                patch.object(sys, "argv", ["zotero_lookup.py", "Test"]), redirect_stdout(output):
+            self.assertEqual(lookup.main(), 0)
+            create.assert_not_called()
+            write.assert_not_called()
+            upload.assert_not_called()
+        result = json.loads(output.getvalue())
+        record = self.folder / result["local_record"]
+        audit = json.loads(record.read_text("utf8"))
+        self.assertEqual(audit["checked_at"], result["checked_at"])
+        self.assertIsNotNone(datetime.fromisoformat(audit["checked_at"]).utcoffset())
+        self.assertEqual(audit["status"], "通过")
+        self.assertEqual(audit["query"], "Test")
+        self.assertEqual(audit["server"], self.library.server)
+        self.assertEqual(audit["papers"], result["papers"])
+        self.assertEqual(audit["zotero_record_writes"], 0)
+        self.assertEqual(result["zotero_record_writes"], 0)
+        self.assertEqual(audit["matches"][0]["parent"], self.library.rows[parent])
+        self.assertIn(private_note, json.dumps(audit))
+        checks = {check["key"]: check for check in audit["matches"][0]["pdf_checks"]}
+        self.assertEqual(set(checks), {verified, printed})
+        for key, path, canonical, evidence in (
+            (verified, first, self.paper["canonical"],
+             {"kind": "verified_sync_audit", "record": prior.relative_to(self.folder).as_posix()}),
+            (printed, second, "arxiv:2406.00001v2", {"kind": "pdf_first_page_arxiv"}),
+        ):
+            with self.subTest(attachment=key):
+                check = checks[key]
+                pdf = sync.inspect_pdf(path)
+                self.assertTrue(check["file_available"])
+                for field in ("path", "bytes", "sha256", "first_page"):
+                    self.assertEqual(check[field], pdf[field])
+                self.assertEqual(check["verified_version"], canonical)
+                self.assertEqual(check["version_evidence"], evidence)
+        self.assertEqual(self.library.rows, original_rows)
+        for sensitive in (parent, verified, printed, note, self.library.server, private_note,
+                          str(self.folder), first.name, second.name, "first_page", "sha256", "children"):
+            self.assertNotIn(sensitive, output.getvalue())
+
+    def test_lookup_preserves_success_when_same_query_later_fails(self):
+        audit_folder = self.folder / "local" / "zotero-audit"
+        self.library.server = "INTERNAL-SERVER-ID"
+        query = "Test"
+        checked_at = datetime(2026, 11, 15, 0, 1, 2, 345600, tzinfo=timezone.utc)
+        later = checked_at + timedelta(microseconds=1)
+        private_error = "private connection details C:/private/Zotero/config.json"
+        success_output, failure_output = io.StringIO(), io.StringIO()
+        with patch.object(lookup, "ROOT", self.folder), patch.object(lookup, "AUDITS", audit_folder), \
+                patch.object(lookup, "datetime") as clock, \
+                patch.object(lookup, "Zotero", side_effect=[self.library, requests.ConnectionError(private_error)]), \
+                patch.object(sys, "argv", ["zotero_lookup.py", query]):
+            clock.now.side_effect = [checked_at, later]
+            with redirect_stdout(success_output):
+                self.assertEqual(lookup.main(), 0)
+            success = json.loads(success_output.getvalue())
+            success_record = self.folder / success["local_record"]
+            original_success = success_record.read_bytes()
+            with redirect_stdout(failure_output):
+                self.assertEqual(lookup.main(), 1)
+        records = sorted(audit_folder.glob("lookup_*.json"))
+        self.assertEqual(len(records), 2)
+        self.assertEqual(success_record.read_bytes(), original_success)
+        failure_record = next(path for path in records if path != success_record)
+        success_audit = json.loads(original_success)
+        failure_audit = json.loads(failure_record.read_text("utf8"))
+        self.assertEqual(success_audit["status"], "通过")
+        self.assertEqual(failure_audit["status"], "待验证")
+        for record, audit, timestamp in ((success_record, success_audit, checked_at),
+                                         (failure_record, failure_audit, later)):
+            with self.subTest(status=audit["status"]):
+                self.assertEqual(audit["query"], query)
+                self.assertEqual(audit["zotero_record_writes"], 0)
+                self.assertEqual(datetime.fromisoformat(audit["checked_at"]), timestamp)
+                self.assertIn(timestamp.strftime("%Y%m%dT%H%M%S%fZ"), record.name)
+                self.assertIn(lookup.digest(query)[:16], record.name)
+        self.assertEqual(failure_audit["error"], private_error)
+        self.assertIn(failure_audit["checked_at"], failure_output.getvalue())
+        self.assertIn(failure_record.relative_to(self.folder).as_posix(), failure_output.getvalue())
+        self.assertNotIn(private_error, failure_output.getvalue())
+        self.assertNotIn("C:/private", failure_output.getvalue())
+
+    def test_scanned_pdf_sync_and_lookup_reuse_reviewed_hash_bound_text(self):
+        text = self.make_scanned_pdf()
+        source = self.folder / "paper.pdf"
+        fingerprint = sync.sha256(source.read_bytes()).hexdigest()
+        evidence = dict(source_pdf_sha256=fingerprint, first_page_text=text,
+                        method="OCR plus visual review", reviewed_at="2026-11-15")
+        sync.persist(self.folder / "reviewed.json", evidence)
+        self.paper["pdf_text_evidence"] = "reviewed.json"
+        audits = self.folder / "audits"
+        self.library.server = "test-server"
+        with patch.object(sync, "AUDITS", audits), patch.object(lookup, "known_versions", return_value={}):
+            self.assertEqual(self.execute()["delta"], [1, 1, 1])
+            original_keys = self.audit["runs"][-1]["after"]
+            self.assertEqual(self.execute()["delta"], [0, 0, 0])
+            self.assertEqual(self.audit["runs"][-1]["after"], original_keys)
+            papers, _, raw = lookup.lookup(self.library, "Test")
+            self.assertEqual(papers[0]["pdfs"][0]["verified_version"], self.paper["canonical"])
+            self.assertEqual(raw[0]["pdf_checks"][0]["text_source"], "reviewed_ocr")
+            self.assertEqual(sync.inspect_pdf(source)["first_page"], text)
+        self.assertEqual(sync.sha256(source.read_bytes()).hexdigest(), fingerprint)
+        self.assertTrue((audits / ("pdf-text_" + fingerprint + ".json")).is_file())
+
+    def test_wrong_or_unreviewed_scan_evidence_never_writes_library(self):
+        text = self.make_scanned_pdf()
+        fingerprint = sync.sha256((self.folder / "paper.pdf").read_bytes()).hexdigest()
+        original = dict(source_pdf_sha256=fingerprint, first_page_text=text,
+                        method="OCR plus visual review", reviewed_at="2026-11-15")
+        self.paper["pdf_text_evidence"] = "reviewed.json"
+        with patch.object(sync, "AUDITS", self.folder / "audits"):
+            for field, value in (("source_pdf_sha256", "0" * 64), ("reviewed_at", ""),
+                                 ("first_page_text", "Unrelated Paper\nOther Person"),
+                                 ("first_page_text", text.replace("v3", "v2"))):
+                with self.subTest(field=field, value=value):
+                    sync.persist(self.folder / "reviewed.json", dict(original, **{field: value}))
+                    with self.assertRaises(sync.Pending):
+                        self.execute()
+                    self.assertFalse(self.library.rows)
+
+    def test_identifier_lookup_matches_metadata_without_server_title_search(self):
+        self.library.server = "test-server"
+        self.library.rows = {
+            "target": dict(key="target", itemType="preprint", title="Test Paper",
+                           extra="arXiv:2406.00001", DOI="10.1234/test", creators=[]),
+            "other": dict(key="other", itemType="preprint", title="Other Paper",
+                          extra="arXiv:2406.00002", DOI="10.1234/other", creators=[]),
+        }
+        items = self.library.items
+        def title_only_search(suffix):
+            return [] if "?q=" in suffix else items(suffix)
+        with patch.object(self.library, "items", side_effect=title_only_search), \
+                patch.object(lookup, "known_versions", return_value={}):
+            for query in ("2406.00001", "2406.00001v3", "arxiv:2406.00001",
+                          "https://arxiv.org/abs/2406.00001v3", "10.1234/test", "doi:10.1234/test"):
+                with self.subTest(query=query):
+                    papers, _, _ = lookup.lookup(self.library, query)
+                    self.assertEqual([p["title"] for p in papers], ["Test Paper"])

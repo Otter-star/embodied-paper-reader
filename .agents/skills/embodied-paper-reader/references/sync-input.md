@@ -17,10 +17,26 @@
 | entry | Zotero 字段字典。预印本用 itemType=preprint，正式会议论文用 conferencePaper。字段名按 Zotero 类型填写，如 repository、url、archiveID、proceedingsTitle、pages、volume、publisher。复用已有父项时保留其书目信息。 |
 | pdf、note | 相对于清单目录的 PDF 与导读 HTML 文件名。 |
 | pdf_sha256 | 正式版必填，从该篇出版记录链接取得的 PDF 文件 SHA-256。哈希与来源证据共同确定版本。 |
+| pdf_text_evidence | 可选，无文本层 PDF 的已复核首页证据 JSON，相对于清单目录。字段及用法见下文。 |
 
 先按身份与版本选定材料再填写清单。文件名使用便于跨平台的 ASCII 安全标识。
 
 清单顶层为 JSON 对象。authors 和 aliases 使用字符串列表，entry 使用包含非空字符串 itemType 的对象，其余必填字段使用非空字符串。正式版另需 pdf_sha256。字段缺失或类型不合适时，在访问 Zotero 前报告待补。
+
+## 无文本层 PDF
+
+实际查看原页并复核 OCR 首页后，可在清单中加 `"pdf_text_evidence": "pdf-text-evidence.json"`。证据文件包含四个非空字符串字段：
+
+```json
+{
+  "source_pdf_sha256": "<原始PDF的完整SHA-256>",
+  "first_page_text": "<已对照原页复核的首页文本>",
+  "method": "<OCR工具与目视复核方法>",
+  "reviewed_at": "2026-11-15"
+}
+```
+
+只有原生提取为空时才使用该证据，哈希必须与当前 PDF 完全一致；标题、第一作者和版本继续按原有规则核验。标准同步在身份与版本核验后，将该文字证据按 PDF 哈希缓存在本机审计目录。后续同步、查库和本地附件回读可以复用相同字节的证据，无需替换 PDF 库方法或重新生成 PDF。文件不同或证据不足时记待验证。脚本不自动运行 OCR，也不宣称能仅靠文本记录证明已目视检查；正文和关键图表仍由 Agent 实际查看。
 
 ## 本地工作目录
 
@@ -52,6 +68,8 @@ HTML 主标题采用 `<h1>[embodied-paper-reader] 中文导读 · 简称 (versio
 ## 查库和同步结果
 
 `zotero_lookup.py` 的 verified_version 来源为本机已通过审计的 PDF 哈希，或与父条目标题一致的 PDF 首页 arXiv 版本标记。未知正式版可按出版记录与文件哈希另行核验。导出副本位于 local/papers/ 下，文件名含哈希，用户随后可用该文件准备清单。
+
+标准 arXiv ID、DOI 和 URL 按父条目的标识元数据匹配，覆盖 Extra 中的已核实别名；普通标题线索使用 Zotero 查询。仅用编号查询为空不足以认定论文不在库中，未核实身份时还需按标题复查。
 
 只读找回也使用此入口。返回的 file_available 表示该附件本地文件可用；has_notes 表示父条目下存在笔记，workflow_note_count 只统计本工作流固定标记的笔记。它们用于定位资料，笔记内容正确性仍需另行回读核验。
 

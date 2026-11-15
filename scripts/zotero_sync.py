@@ -113,13 +113,27 @@ def persist(path, audit):
     temp.replace(path)
 
 
-def inspect_pdf(path):
+def inspect_pdf(path, text_evidence=None):
+    fingerprint = sha256(path.read_bytes()).hexdigest()
     with pymupdf.open(path) as doc:
         first = doc[0].get_text()
+    result = {"path": str(path.resolve()), "bytes": path.stat().st_size,
+              "sha256": fingerprint, "first_page": first, "text_source": "pdf"}
     if not first.strip():
-        raise Pending("PDF 首页未提取到文字")
-    return {"path": str(path.resolve()), "bytes": path.stat().st_size,
-            "sha256": sha256(path.read_bytes()).hexdigest(), "first_page": first}
+        record = text_evidence
+        cached = AUDITS / ("pdf-text_" + fingerprint + ".json")
+        if record is None and cached.is_file():
+            record = json.loads(cached.read_text("utf8"))
+        if record is None:
+            raise Pending("PDF 首页未提取到文字；需要已目视复核且绑定 PDF 哈希的 OCR 证据")
+        fields = ("source_pdf_sha256", "first_page_text", "method", "reviewed_at")
+        if not isinstance(record, dict) or any(not isinstance(record.get(k), str) or not record[k].strip() for k in fields):
+            raise Pending("OCR 证据需包含源 PDF 哈希、首页文本、提取方法和复核日期")
+        if record["source_pdf_sha256"] != fingerprint:
+            raise Pending("OCR 证据与当前 PDF 哈希不符")
+        result.update(first_page=record["first_page_text"], text_source="reviewed_ocr",
+                      text_evidence={k: record[k] for k in ("method", "reviewed_at")})
+    return result
 
 
 def verify_source(paper, pdf):
@@ -267,8 +281,15 @@ def keys(state):
 
 def sync(client, paper, folder, audit, path, run):
     pdf_path = folder / paper["pdf"]
-    source_pdf = inspect_pdf(pdf_path)
+    evidence = json.loads((folder / paper["pdf_text_evidence"]).read_text("utf8")) if paper.get("pdf_text_evidence") else None
+    source_pdf = inspect_pdf(pdf_path, evidence)
     verify_source(paper, source_pdf)
+    if source_pdf["text_source"] == "reviewed_ocr":
+        AUDITS.mkdir(parents=True, exist_ok=True)
+        persist(AUDITS / ("pdf-text_" + source_pdf["sha256"] + ".json"), {
+            "source_pdf_sha256": source_pdf["sha256"], "first_page_text": source_pdf["first_page"],
+            **source_pdf["text_evidence"],
+        })
     guide = note_body((folder / paper["note"]).read_text("utf8").strip())
     title = note_title(guide)
     if not (title.startswith(MARKER) and title.endswith("(" + paper["version"] + ")")):
@@ -338,6 +359,8 @@ def validate_manifest(paper):
         raise Pending("清单 entry 需为对象")
     if not isinstance(paper["entry"].get("itemType"), str) or not paper["entry"]["itemType"].strip():
         raise Pending("清单 entry.itemType 需为非空字符串")
+    if "pdf_text_evidence" in paper and (not isinstance(paper["pdf_text_evidence"], str) or not paper["pdf_text_evidence"].strip()):
+        raise Pending("清单 pdf_text_evidence 需为非空字符串")
 
 
 def error_summary(exc):
