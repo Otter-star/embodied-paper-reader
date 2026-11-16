@@ -2,7 +2,7 @@
 
 用户可以只发送：
 
-> 帮我安装这个工作流：https://github.com/Otter-star/embodied-paper-reader
+> 帮我安装这个工作流：https://github.com/Otter-star/embodied-paper-workflow
 
 安装目标是让后续对话能调用完整的论文阅读流程。**保留完整仓库、安装 Python 依赖，并把仓库内的 Skill 链接到用户级发现目录。** 本 Skill 使用外层的 `scripts/`、`docs/` 和 `requirements.txt`，不能仅用通用 Skill 安装器复制 `.agents/skills/embodied-paper-reader/`。
 
@@ -10,17 +10,18 @@
 
 - 当前安装脚本与实测环境为 **Windows、Codex、Python 3.10+、Git、Zotero Desktop 10 个人库**。Agent 需要本机文件与命令执行能力；阅读时还需要联网检索及看图能力。其他 Agent 或系统须按各自的 Skill 发现规则接入，尚未验收，不能仅凭复制成功报告可用。
 - Zotero 插件是可选诊断工具。本仓库脚本直接使用 Zotero 本机 API，无需额外配置云端服务或模型 API Key。模型由当前 Agent 提供。
+- 本项目原创代码与工作流文档采用 MIT，第三方依赖另按其许可证授权；具体范围见 [README 的许可证说明](README.md#许可证)。
 - 私有仓库使用现有 Git 登录权限；无法访问时报告需要仓库授权，不要求用户把令牌贴到对话里。缺 Git、Python 或 Zotero 时说明缺项，按用户环境安装或由用户补齐，不把 Skill 链接成功当作环境已就绪。
 - 安装只配置本工作流，不读取论文库、不导入示例论文、不请求 Zotero 写入授权，也不修改全局 Agent 指令、权限或 Zotero 设置。
 
 ## Windows 安装步骤
 
-1. 先读取仓库 `README.md` 和本文件。将完整仓库保存在用户可长期保留的位置，默认可用 `%USERPROFILE%\agent-workflows\embodied-paper-reader`。已有同名工作目录时先检查来源及修改，复用正确仓库，不覆盖其他内容。
+1. 先读取仓库 `README.md` 和本文件。已有用户级 Skill 链接时，从链接目标定位并复用完整仓库。首次安装将完整仓库保存在用户可长期保留的位置，默认可用 `%USERPROFILE%\agent-workflows\embodied-paper-workflow`。已有同名工作目录时先检查来源及修改，复用正确仓库，不覆盖其他内容。
 2. 检查 Git 与 Python 3.10+，克隆仓库后运行下列安装命令。命令中的执行策略只作用于本次 PowerShell 进程；若机器策略拒绝执行，按环境的正常授权机制处理。
 
 ```powershell
-$paperReaderRoot = Join-Path $env:USERPROFILE 'agent-workflows\embodied-paper-reader'
-git clone https://github.com/Otter-star/embodied-paper-reader.git "$paperReaderRoot"
+$paperReaderRoot = Join-Path $env:USERPROFILE 'agent-workflows\embodied-paper-workflow'
+git clone https://github.com/Otter-star/embodied-paper-workflow.git "$paperReaderRoot"
 Set-Location -LiteralPath $paperReaderRoot
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_skill.ps1 -InstallDependencies
 ```

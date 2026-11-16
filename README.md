@@ -1,14 +1,14 @@
-# embodied-paper-reader
+# embodied-paper-workflow
 
 一个面向具身智能研究的论文阅读工作流。目标是让读者能讲清论文贡献、回到原文核查实验结论、了解复现条件，并在用户提出时判断自己的设备适合做哪一步。
 
-项目 Skill 位于 [.agents/skills/embodied-paper-reader/](.agents/skills/embodied-paper-reader/SKILL.md)，配套[验收表](docs/acceptance.md)与本机 Zotero 脚本。OpenVLA 已用于验证正式版与 arXiv v3 的入库及重试。
+项目提供的 Skill 名称为 `embodied-paper-reader`，位于 [.agents/skills/embodied-paper-reader/](.agents/skills/embodied-paper-reader/SKILL.md)，配套[验收表](docs/acceptance.md)与本机 Zotero 脚本。OpenVLA 已用于验证正式版与 arXiv v3 的入库及重试。
 
 ## 一句话安装
 
 把下面这句话发给具有本机文件、命令和联网能力的 Codex：
 
-> 帮我安装这个工作流：https://github.com/Otter-star/embodied-paper-reader
+> 帮我安装这个工作流：https://github.com/Otter-star/embodied-paper-workflow
 
 **给安装 Agent：先读[安装说明](INSTALL.md)，克隆完整仓库、安装依赖并建立用户级 Skill 链接，再核验安装结果。** 这个 Skill 依赖仓库内的脚本和核验表，仅复制 Skill 文件夹会缺文件。当前安装入口已面向 Windows + Codex + Zotero Desktop 10；其他 Agent 或系统尚未验收。Zotero 插件可选，不需要额外模型 API Key。私有仓库需要使用者有访问权限。
 
@@ -121,3 +121,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_skill.ps1 -I
 2026-11-15 的六段式精读与配图改版已完成本机独立对话验收，覆盖实际看图、同版导读原位更新与重试零新增；只读找回也已通过入口触发、状态完整性与脱敏复测。Windows 用户级链接安装入口已提供，跨项目显式调用已验证。桌面 Agent 工作流已覆盖只读任务、同任务续跑、π₀ 精读入库和固定窗持久路线。CLI 后台方式仍受 Windows 子进程启动问题影响。论文自身的未决证据继续按项标注。后续按真实主题及更宽时间窗扩展选文覆盖，再按需要演进 Zotero 笔记内嵌图片和其他 Zotero 版本的兼容性。
 
 Git 跟踪工作流规则、脚本和测试用例。论文 PDF、个人导读和 Zotero 数据保存在本机。需要暂存的阅读材料可放在仓库中由 Git 忽略的 `local/` 目录。
+
+## 许可证
+
+Copyright (c) 2026 Otter-star。本仓库的原创代码与工作流文档采用 [MIT License](LICENSE)。
+
+第三方依赖保留各自的许可证，本项目通过 `requirements.txt` 安装这些库。特别是 [PyMuPDF 采用 AGPL 或商业许可](https://pymupdf.readthedocs.io/en/latest/about.html#license-and-copyright)，本仓库的 MIT 授权不覆盖该依赖。使用或分发包含这些依赖的方案时，仍需遵守相应许可条件。
