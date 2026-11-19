@@ -10,7 +10,7 @@ from urllib.parse import quote
 import requests
 
 from zotero_sync import (
-    AUDITS, ARXIV, ROOT, MARKER, Pending, Zotero, digest, error_summary,
+    AUDITS, ARXIV, ROOT, MARKER, TEXT_LAYER_PRIORITY, Pending, Zotero, digest, error_summary,
     identifiers, inspect_pdf, normalized, note_title, persist,
 )
 
@@ -64,7 +64,7 @@ def lookup(client, query):
                      "path": str(path) if path else None,
                      "file_available": bool(path and path.is_file())}
             if path and path.is_file():
-                pdf = inspect_pdf(path)
+                pdf = inspect_pdf(path, require_first_page=False)
                 check.update(pdf)
                 check["title_matches"] = normalized(parent["title"]) in normalized(pdf["first_page"])
                 if check["title_matches"]:
@@ -77,13 +77,24 @@ def lookup(client, query):
                         version = "arxiv:" + printed.pop()
                         basis = {"kind": "pdf_first_page_arxiv"}
                     if version:
-                        files.append({"canonical": version, "path": path, "sha256": pdf["sha256"]})
+                        files.append({"canonical": version, "parent": parent["key"], "path": path,
+                                      "sha256": pdf["sha256"], "body_text": pdf["body_text"]})
             check.update(verified_version=version, version_evidence=basis)
             checks.append(check)
             paper["pdfs"].append({"source_url": child.get("url", ""), "verified_version": version,
-                                  "file_available": bool(path and path.is_file())})
+                                  "file_available": check["file_available"], "body_text": check.get("body_text")})
         papers.append(paper)
     return papers, files, raw
+
+
+def preferred_copy(files, version):
+    matches = [f for f in files if f["canonical"] == version]
+    if len({f["parent"] for f in matches}) == 1:
+        best = max(TEXT_LAYER_PRIORITY[f["body_text"]["status"]] for f in matches)
+        matches = [f for f in matches if TEXT_LAYER_PRIORITY[f["body_text"]["status"]] == best]
+        if len(matches) == 1:
+            return matches[0]
+    raise Pending("待导出的版本未唯一匹配，需核对现有附件")
 
 
 def main():
@@ -103,10 +114,7 @@ def main():
         result = {"checked_at": audit["checked_at"], "zotero_record_writes": 0,
                   "papers": papers, "local_record": record.relative_to(ROOT).as_posix()}
         if args.export_version:
-            matches = [f for f in files if f["canonical"] == args.export_version]
-            if len(matches) != 1:
-                raise Pending("待导出的版本未唯一匹配，需核对现有附件")
-            selected = matches[0]
+            selected = preferred_copy(files, args.export_version)
             folder = ROOT / "local" / "papers" / ("reuse_" + digest(args.export_version)[:16])
             folder.mkdir(parents=True, exist_ok=True)
             destination = folder / (selected["sha256"] + ".pdf")

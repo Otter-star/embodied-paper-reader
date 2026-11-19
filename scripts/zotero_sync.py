@@ -125,18 +125,52 @@ def persist(path, audit):
     temp.replace(path)
 
 
-def inspect_pdf(path, text_evidence=None):
+TEXT_LAYER_LABELS = {
+    "selectable": "抽查的正文页均有可定位文字，可用于选字高亮",
+    "partial": "仅部分抽查页有可定位的正文文字",
+    "unconfirmed": "抽查未确认正文可选，文件中仅确认有文字",
+    "image_only": "本附件无法按文字高亮（全文件未检出文字层）",
+}
+TEXT_LAYER_PRIORITY = {"selectable": 2, "partial": 1, "unconfirmed": 0, "image_only": 0}
+
+
+def body_text_layer(doc):
+    """Sample the body, excluding running headers, footers and image blocks."""
+    count = len(doc)
+    pages = sorted({min(2, count), (count + 2) // 2, 2 * count // 3 + 1})
+    hits = []
+    for number in pages:
+        page = doc[number - 1]
+        clip = page.rect * page.derotation_matrix
+        margin = clip.height * 0.08
+        clip.y0 += margin
+        clip.y1 -= margin
+        blocks = page.get_text("blocks", clip=clip)
+        if any(block[6] == 0 and sum(char.isalpha() for char in block[4]) >= 40 for block in blocks):
+            hits.append(number)
+    if hits:
+        status = "selectable" if hits == pages else "partial"
+    else:
+        status = "unconfirmed" if any(page.get_text("words") for page in doc) else "image_only"
+    return {"status": status, "sampled_pages": pages, "text_pages": hits}
+
+
+def inspect_pdf(path, text_evidence=None, *, require_first_page=True):
     fingerprint = sha256(path.read_bytes()).hexdigest()
     with pymupdf.open(path) as doc:
         first = doc[0].get_text()
+        layer = body_text_layer(doc)
     result = {"path": str(path.resolve()), "bytes": path.stat().st_size,
-              "sha256": fingerprint, "first_page": first, "text_source": "pdf"}
+              "sha256": fingerprint, "first_page": first, "text_source": "pdf", "body_text": layer}
     if not first.strip():
         record = text_evidence
         cached = AUDITS / ("pdf-text_" + fingerprint + ".json")
         if record is None and cached.is_file():
             record = json.loads(cached.read_text("utf8"))
         if record is None:
+            if not require_first_page:
+                result["text_source"] = "unavailable"
+                return result
             raise Pending("PDF 首页未提取到文字；需要已目视复核且绑定 PDF 哈希的 OCR 证据")
         fields = ("source_pdf_sha256", "first_page_text", "method", "reviewed_at")
         if not isinstance(record, dict) or any(not isinstance(record.get(k), str) or not record[k].strip() for k in fields):
@@ -280,6 +314,8 @@ def inventory(client, paper, source_pdf, audit):
     if not parent:
         return found
     notes, pdfs = [], []
+    previous_hashes = {run["pdf"]["sha256"] for run in audit.get("runs", [])
+                       if run.get("status") == "通过" and run.get("pdf")}
     for item in client.items("/" + parent["key"] + "/children"):
         if item.get("parentItem") != parent["key"]:
             continue
@@ -296,7 +332,7 @@ def inventory(client, paper, source_pdf, audit):
                     pdfs.append({"key": item["key"], "missing": True})
                 continue
             fingerprint = sha256(path.read_bytes()).hexdigest()
-            if fingerprint == source_pdf["sha256"]:
+            if fingerprint == source_pdf["sha256"] or fingerprint in previous_hashes:
                 pdfs.append({"key": item["key"], **inspect_pdf(path)})
             elif paper["canonical"].startswith("arxiv:"):
                 # An existing copy can have different bytes (e.g. embedded annotations).
@@ -337,7 +373,13 @@ def sync(client, paper, folder, audit, path, run):
     before = inventory(client, paper, source_pdf, audit)
     run["before"] = keys(before)
     run["pdf_file_present_before"] = bool(before["pdf"] and not before["pdf"].get("missing"))
+    if run["pdf_file_present_before"]:
+        run["stored_body_text_before"] = before["pdf"]["body_text"]
     persist(path, audit)
+    if (run["pdf_file_present_before"]
+            and TEXT_LAYER_PRIORITY[source_pdf["body_text"]["status"]]
+            > TEXT_LAYER_PRIORITY[run["stored_body_text_before"]["status"]]):
+        raise Pending("已取得同版文字层更完整的 PDF；已保留库中原附件和批注，请确认如何处理副本")
     parent = before["parent"]
     if not parent:
         creators = []
@@ -444,6 +486,7 @@ def main(manifest):
             sync(client, paper, manifest.parent, audit, path, run)
             run["status"] = "通过"
             summary = "父子关系、PDF 与笔记回读通过；增量 " + "/".join(map(str, run["delta"]))
+            summary += "；" + TEXT_LAYER_LABELS[run["pdf"]["body_text"]["status"]]
         except (Pending, requests.RequestException, OSError, ValueError, KeyError, RuntimeError) as exc:
             run["error"] = str(exc) if not isinstance(exc, requests.RequestException) else type(exc).__name__
             if isinstance(exc, requests.RequestException) and exc.request is not None:
@@ -460,12 +503,18 @@ def main(manifest):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path, nargs="?")
+    parser.add_argument("--check-text", metavar="PDF", type=Path, help="只读抽查本地 PDF 的正文文字层")
     parser.add_argument("--authorize", action="store_true", help="Authorize once and store reusable access in Windows credentials")
     parser.add_argument("--forget-authorization", action="store_true", help="Remove this Zotero instance's cached credential")
     try:
         args = parser.parse_args()
-        if sum((bool(args.manifest), args.authorize, args.forget_authorization)) != 1:
-            parser.error("提供一个清单，或选择 --authorize / --forget-authorization")
+        if sum((bool(args.manifest), bool(args.check_text), args.authorize, args.forget_authorization)) != 1:
+            parser.error("提供一个清单，或选择 --check-text PDF / --authorize / --forget-authorization")
+        if args.check_text:
+            with pymupdf.open(args.check_text) as doc:
+                layer = body_text_layer(doc)
+            print(json.dumps({**layer, "message": TEXT_LAYER_LABELS[layer["status"]]}, ensure_ascii=False))
+            raise SystemExit(0)
         if args.authorize:
             client = Zotero()
             client.authorize()

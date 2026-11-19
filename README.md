@@ -41,7 +41,7 @@
 
 首版脚本在一次执行中完成写前盘点、写入或更新、回读验证和写后盘点。重试从已落盘的记录和 Zotero 实际状态恢复。首版审计文件保存在 `local/zotero-audit/`，采用可跨平台使用的文件名。对话只展示脱敏结果、计数变化、核验时间和详单相对路径。
 
-没有文本层的 PDF 可提供绑定原文件哈希的已复核 OCR 首页证据，由标准同步、查库和附件回读共用，保留原始 PDF 字节。字段见 [同步输入约定](.agents/skills/embodied-paper-reader/references/sync-input.md#无文本层-pdf)。
+**同一版本优先保存正文能选字、高亮的 PDF。** 工作流抽查正文页，回读 Zotero 附件后报告文字层情况。若只能取得扫描版，会在导读和回复中提示“本附件无法按文字高亮”。已有批注随原附件保留。首页 OCR 可以辅助核对论文身份，正文选字取决于 PDF 内嵌的文字层。[同步输入约定](.agents/skills/embodied-paper-reader/references/sync-input.md#无文本层-pdf)
 
 ### 运行同步脚本
 

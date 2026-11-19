@@ -84,6 +84,87 @@ class SyncTest(unittest.TestCase):
         path.write_bytes(data)
         return text
 
+    def add_body_pages(self, text_pages):
+        path = self.folder / "paper.pdf"
+        with pymupdf.open(path) as doc:
+            for number in range(2, 6):
+                page = doc.new_page()
+                page.insert_text((50, 20), "Running header with sufficient letters to resemble a sentence.")
+                if number in text_pages:
+                    # Invisible overlay, as in an embedded OCR layer.
+                    page.insert_text((50, 150), "The robot learned to control its arm from these observations.",
+                                     render_mode=3)
+            data = doc.tobytes()
+        path.write_bytes(data)
+
+    def test_body_sampling_excludes_cover_and_running_headers(self):
+        for text_pages, status in (([], "unconfirmed"), ([2], "partial"), ([2, 3, 4], "selectable")):
+            with self.subTest(status=status):
+                self.make_pdf(self.paper["version"])
+                self.add_body_pages(text_pages)
+                pdf = sync.inspect_pdf(self.folder / "paper.pdf")
+                self.assertEqual(pdf["body_text"], {"status": status, "sampled_pages": [2, 3, 4],
+                                                    "text_pages": text_pages})
+
+    def test_better_copy_preserves_existing_attachment_until_resolved(self):
+        self.add_body_pages([])
+        original = self.execute()
+        attachment = self.library.files[original["after"][1]]
+        with pymupdf.open(attachment) as doc:
+            doc[0].add_text_annot((100, 120), "Keep my annotation")
+            doc.saveIncr()
+        annotated_bytes = attachment.read_bytes()
+        self.make_pdf(self.paper["version"])
+        self.add_body_pages([2, 3, 4])
+        with self.assertRaisesRegex(sync.Pending, "文字层更完整"):
+            self.execute()
+        self.assertEqual(len(self.library.rows), 3)
+        self.assertEqual(attachment.read_bytes(), annotated_bytes)
+
+    def test_publisher_alternate_url_recognizes_previously_verified_scan(self):
+        text = self.make_scanned_pdf()
+        scanned = sync.sha256((self.folder / "paper.pdf").read_bytes()).hexdigest()
+        self.paper.update(canonical="publisher:test@vor", version="publisher:test@vor",
+                          pdf_sha256=scanned, pdf_text_evidence="reviewed.json", pdf_url="https://example.org/scan")
+        sync.persist(self.folder / "reviewed.json", dict(source_pdf_sha256=scanned, first_page_text=text,
+                     method="visual review", reviewed_at="2026-11-19"))
+        self.note.write_text(self.guide.replace("2406.00001v3", self.paper["version"]), "utf8")
+        with patch.object(sync, "AUDITS", self.folder):
+            original = self.execute()
+            original["status"] = "通过"
+            self.make_pdf("2406.00001v3")
+            self.add_body_pages([2, 3, 4])
+            self.paper.update(pdf_url="https://example.org/text",
+                              pdf_sha256=sync.sha256((self.folder / "paper.pdf").read_bytes()).hexdigest())
+            with self.assertRaisesRegex(sync.Pending, "文字层更完整"):
+                self.execute()
+            self.assertEqual(len(self.library.rows), 3)
+
+    def test_lookup_prefers_verified_readable_copy_despite_unidentified_scan(self):
+        self.add_body_pages([])
+        run = self.execute()
+        parent, original, _ = run["after"]
+        fields = dict(itemType="attachment", parentItem=parent, contentType="application/pdf")
+        self.make_scanned_pdf()
+        path = self.folder / "paper.pdf"
+        scan = self.library.create(fields)
+        self.library.upload(scan, path, None)
+        self.make_pdf(self.paper["version"])
+        self.add_body_pages([2, 3, 4])
+        selectable = self.library.create(fields)
+        self.library.upload(selectable, path, None)
+        self.library.server = "test"
+        with patch.object(sync, "AUDITS", self.folder), patch.object(lookup, "known_versions", return_value={}):
+            papers, files, _ = lookup.lookup(self.library, "Test")
+        self.assertEqual(len(papers[0]["pdfs"]), 3)
+        self.assertIsNone(papers[0]["pdfs"][1]["verified_version"])
+        self.assertEqual(lookup.preferred_copy(files, self.paper["canonical"])["path"], self.library.files[selectable])
+        self.assertIn(self.library.files[original], [f["path"] for f in files])
+        other_parent = dict(files[-1], parent="another-parent")
+        for ambiguous in (files + [other_parent], files + [files[-1]]):
+            with self.assertRaises(sync.Pending):
+                lookup.preferred_copy(ambiguous, self.paper["canonical"])
+
     def execute(self):
         run = {}
         self.audit["runs"].append(run)
@@ -495,6 +576,8 @@ class SyncTest(unittest.TestCase):
             papers, _, raw = lookup.lookup(self.library, "Test")
             self.assertEqual(papers[0]["pdfs"][0]["verified_version"], self.paper["canonical"])
             self.assertEqual(raw[0]["pdf_checks"][0]["text_source"], "reviewed_ocr")
+            self.assertEqual(papers[0]["pdfs"][0]["body_text"]["status"], "image_only")
+            self.assertEqual(self.audit["runs"][-1]["pdf"]["body_text"]["status"], "image_only")
             self.assertEqual(sync.inspect_pdf(source)["first_page"], text)
         self.assertEqual(sync.sha256(source.read_bytes()).hexdigest(), fingerprint)
         self.assertTrue((audits / ("pdf-text_" + fingerprint + ".json")).is_file())
